@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+openleadr
+sqlalchemy
+aiosqlite # Added SQLite async driver
+requests
+python-dotenv
+pandas
+google-generativeai
+pyOpenSSL==23.3.0 # Pinning version for signxml compatibility
