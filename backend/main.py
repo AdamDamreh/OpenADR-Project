@@ -1,14 +1,14 @@
 import asyncio
 import logging
-# import asyncio # Commented out as VEN client task is disabled
-import logging
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Import CORS Middleware
 from pydantic import BaseModel, Field, validator # Import Pydantic
-# from openleadr import OpenADRClient, enable_default_logging # Commented out OpenADR
+from openleadr import OpenADRClient, enable_default_logging
 from dotenv import load_dotenv
 import os
 from datetime import datetime # Added for timestamping
 import pandas as pd
+import numpy as np # Import numpy for NaN handling
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -17,7 +17,8 @@ from backend.services.data_service import load_data
 from backend.services.database_service import (
     init_db,
     save_power_reading,
-    get_all_live_power_readings # Import the function to get all live readings
+    get_all_live_power_readings, # Import the function to get all live readings
+    get_latest_live_power_reading # Import function to get the latest reading
 )
 # Import specific functions needed, add new ones later
 from backend.services.prediction_service import (
@@ -31,15 +32,14 @@ from backend.services.prediction_service import (
 load_dotenv()
 
 # Configure logging
-# enable_default_logging() # Commented out OpenADR logging setup
-# logger = logging.getLogger('openleadr') # Use standard logger or configure differently if needed
+enable_default_logging() # Enable OpenADR logging
 logging.basicConfig(level=logging.INFO) # Basic logging config
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-# VTN_URL = os.getenv("VTN_URL", "http://localhost:8080/OpenADR2/Simple/2.0b") # Commented out OpenADR config
-# VEN_NAME = os.getenv("VEN_NAME", "my_ven") # Commented out OpenADR config
-# VTN_ID = os.getenv("VTN_ID", "my_vtn") # Commented out OpenADR config
+VTN_URL = os.getenv("VTN_URL", "http://0.0.0.0:8080/OpenADR2/Simple/2.0b") # VTN server URL
+VEN_NAME = os.getenv("VEN_NAME", "my_ven") # VEN client name
+VTN_ID = os.getenv("VTN_ID", "my_vtn") # VTN server ID
 
 # --- Global variables ---
 # In a production scenario, consider a more robust state management or caching solution
@@ -95,8 +95,8 @@ async def lifespan(app: FastAPI):
         # Depending on requirements, you might want to raise the exception here to stop startup
         # raise
 
-    # Start the VEN client in the background - COMMENTED OUT
-    # ven_task = asyncio.create_task(start_ven_client())
+    # Start the VEN client in the background
+    ven_task = asyncio.create_task(start_ven_client())
 
     # TODO: Initialize database connection pool if needed (SQLAlchemy engine is created in database_service)
     # TODO: Start VTN server if running internally - COMMENTED OUT
@@ -107,20 +107,20 @@ async def lifespan(app: FastAPI):
     yield # Application runs here
     logger.info("Shutting down backend services...")
 
-    # Stop VEN client - COMMENTED OUT
-    # if 'ven_client' in locals() and ven_client.is_running(): # Check if defined before using
-    #     logger.info("Stopping VEN client...")
-    #     await ven_client.stop()
-    #     try:
-    #         if 'ven_task' in locals(): # Check if task exists
-    #              await asyncio.wait_for(ven_task, timeout=5.0)
-    #              logger.info("VEN client stopped.")
-    #         else:
-    #              logger.info("VEN client stopped (task not found).")
-    #     except asyncio.TimeoutError:
-    #         logger.warning("VEN client did not stop gracefully within timeout.")
-    #     except Exception as e:
-    #          logger.error(f"Error stopping VEN client: {e}")
+    # Stop VEN client
+    if 'ven_client' in globals() and hasattr(ven_client, 'is_running') and ven_client.is_running():
+        logger.info("Stopping VEN client...")
+        await ven_client.stop()
+        try:
+            if 'ven_task' in locals(): # Check if task exists
+                 await asyncio.wait_for(ven_task, timeout=5.0)
+                 logger.info("VEN client stopped.")
+            else:
+                 logger.info("VEN client stopped (task not found).")
+        except asyncio.TimeoutError:
+            logger.warning("VEN client did not stop gracefully within timeout.")
+        except Exception as e:
+             logger.error(f"Error stopping VEN client: {e}")
 
 
     # TODO: Close database connections
@@ -167,45 +167,93 @@ class PowerReading(BaseModel):
 # Use the lifespan context manager for startup/shutdown logic
 app = FastAPI(title="OpenADR Cloud Simulation Backend (Prediction Only)", lifespan=lifespan)
 
-# --- OpenLEADR VEN (Client) Setup - COMMENTED OUT ---
-# async def handle_event(event):
-#     """
-#     Placeholder function to handle incoming OpenADR events from the VTN.
-#     """
-#     logger.info(f"Received event: {event}")
-#     # Example: Trigger prediction based on event signal
-#     # This is a simplified example; real logic depends on event structure and needs
-#     try:
-#         signal = event['event_signals'][0]['intervals'][0]['signal_payload']
-#         logger.info(f"Event signal payload: {signal}")
-#
-#         # --- Example: Use prediction if event requires action ---
-#         # This logic needs refinement based on actual event types and signals
-#         if historical_data is not None and not historical_data.empty:
-#              # Get the latest data slice (e.g., last 6 hours before the event start time)
-#              # Note: Event time needs careful handling (timezones!)
-#              # For simplicity, using the latest available data for now
-#              latest_data_slice = historical_data.tail(6)
-#              predicted_demand = await predict_demand_with_gemini(latest_data_slice)
-#              if predicted_demand is not None:
-#                  logger.info(f"Demand prediction triggered by event: {predicted_demand}")
-#                  # TODO: Use the prediction to decide optIn/optOut or adjust load
-#              else:
-#                  logger.warning("Prediction failed, cannot use it for event handling.")
-#         else:
-#              logger.warning("No historical data available for prediction during event handling.")
-#
-#     except (KeyError, IndexError) as e:
-#         logger.error(f"Could not parse event signal details: {e}")
-#     except Exception as e:
-#         logger.error(f"Error during event handling: {e}")
-#
-#
-#     # TODO: Implement actual opt-in/opt-out logic based on event and prediction
-#     return 'optIn' # Default response for now
-#
+# --- CORS Middleware ---
+# TEMPORARILY allow all origins for debugging (reverted)
+origins = ["*"] # Allow any origin
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins, # Use the wildcard origin
+    allow_credentials=True, # Keep credentials allowed if needed
+    allow_methods=["*"], # Allow all methods
+    allow_headers=["*"], # Allow all headers
+)
+
+
+# --- OpenLEADR VEN (Client) Setup ---
+# TEMPORARILY DISABLED FOR TESTING
+# We'll simulate the VEN-VTN communication instead
+
+# Simulated event handler function (will be used directly, not through OpenLEADR)
+async def handle_event(event):
+    """
+    Handle incoming OpenADR events from the VTN.
+    The board will send information to SmartThings, which will then communicate with this VEN client.
+    """
+    logger.info(f"Received event from VTN: {event}")
+    
+    try:
+        # For simulation, we'll assume a simple event structure
+        signal = event.get('signal_payload', 1.0)
+        logger.info(f"Event signal payload: {signal}")
+
+        # Get the latest power readings from the database (sent by the board via SmartThings)
+        live_readings = await get_all_live_power_readings()
+        
+        if live_readings:
+            logger.info(f"Found {len(live_readings)} live readings from the board via SmartThings.")
+            
+            # Use the live readings to make a prediction
+            predicted_demand = await predict_live_demand_with_gemini(live_readings)
+            
+            if predicted_demand is not None:
+                logger.info(f"Demand prediction triggered by event: {predicted_demand}")
+                # TODO: Use the prediction to decide optIn/optOut or adjust load
+                
+                # For now, we'll opt in if the predicted demand is below a threshold
+                # This is just an example - you'll need to implement your own logic
+                threshold = 1000  # Example threshold in watts
+                if predicted_demand < threshold:
+                    logger.info(f"Predicted demand {predicted_demand} is below threshold {threshold}, opting in.")
+                    return 'optIn'
+                else:
+                    logger.info(f"Predicted demand {predicted_demand} exceeds threshold {threshold}, opting out.")
+                    return 'optOut'
+            else:
+                logger.warning("Prediction failed, defaulting to optIn.")
+        else:
+            logger.warning("No live readings available from the board, defaulting to optIn.")
+
+    except Exception as e:
+        logger.error(f"Error during event handling: {e}")
+
+    # Default response if we can't make a decision based on data
+    return 'optIn'
+
+# TEMPORARILY DISABLED FOR TESTING
 # ven_client = OpenADRClient(ven_name=VEN_NAME, vtn_url=VTN_URL)
 # ven_client.add_handler('on_event', handle_event)
+
+# Create a simulated VEN client for testing
+class SimulatedVENClient:
+    def __init__(self):
+        self.running = False
+        logger.info("Initialized simulated VEN client")
+    
+    def is_running(self):
+        return self.running
+    
+    async def run(self):
+        self.running = True
+        logger.info("Simulated VEN client is running")
+        # In a real implementation, this would connect to the VTN
+        
+    async def stop(self):
+        self.running = False
+        logger.info("Simulated VEN client stopped")
+
+# Use the simulated client instead
+ven_client = SimulatedVENClient()
 
 # --- OpenLEADR VTN (Server) Setup - COMMENTED OUT ---
 # In a real-world scenario, VTN and VEN might run as separate services.
@@ -220,6 +268,31 @@ app = FastAPI(title="OpenADR Cloud Simulation Backend (Prediction Only)", lifesp
 @app.get("/")
 async def read_root():
     return {"message": "OpenADR Cloud Simulation Backend Running", "gemini_configured": genai_configured}
+
+@app.post("/simulate/openadr-event")
+async def simulate_openadr_event():
+    """
+    Simulates receiving an OpenADR event from the VTN.
+    This is for testing the event handling functionality without a real VTN server.
+    """
+    # Create a simple event object
+    event = {
+        "event_id": "simulated_event_001",
+        "signal_payload": 1.0,
+        "start_time": datetime.now(timezone.utc).isoformat(),
+        "duration_minutes": 5
+    }
+    
+    logger.info(f"Simulating OpenADR event: {event}")
+    
+    # Call the event handler directly
+    response = await handle_event(event)
+    
+    return {
+        "event": event,
+        "response": response,
+        "message": f"Simulated OpenADR event processed with response: {response}"
+    }
 
 @app.get("/predict/next-hour")
 async def get_next_hour_prediction():
@@ -354,6 +427,110 @@ async def get_live_prediction():
         raise HTTPException(status_code=500, detail=f"Internal server error during live prediction: {e}")
 
 
+@app.get("/readings/latest")
+async def get_latest_reading():
+    """
+    Fetches the most recent power reading stored in the database.
+    """
+    try:
+        latest_reading = await get_latest_live_power_reading()
+        if latest_reading is None:
+            raise HTTPException(status_code=404, detail="No live power readings found in the database.")
+
+        # Convert the SQLAlchemy model instance to a dictionary or Pydantic model if needed
+        # For simplicity, FastAPI can often serialize SQLAlchemy models directly
+        return latest_reading
+    except HTTPException as http_exc:
+        # Re-raise HTTPException to ensure correct status code is sent
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error fetching latest reading: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error fetching latest reading: {e}")
+
+
+@app.get("/averages/hourly")
+async def get_hourly_averages():
+    """
+    Returns the pre-calculated hourly averages based on the historical dataset.
+    """
+    logger.info("Received request for /averages/hourly") # Log request entry
+    if hourly_averages is None:
+        logger.error("Hourly averages requested but the variable is None.")
+        raise HTTPException(status_code=503, detail="Hourly averages have not been calculated or are unavailable (is None).")
+    elif hourly_averages.empty:
+         logger.error("Hourly averages requested but the DataFrame is empty.")
+         raise HTTPException(status_code=503, detail="Hourly averages have not been calculated or are unavailable (is empty).")
+
+
+    try:
+        logger.info(f"Attempting to serve hourly averages. DataFrame shape: {hourly_averages.shape}, Columns: {hourly_averages.columns.tolist()}") # Log details before conversion
+
+        # Replace NaN values with None before converting to dictionary
+        averages_filled = hourly_averages.replace({np.nan: None})
+        logger.info("Replaced NaN values with None in hourly averages.")
+
+        # Convert DataFrame to JSON format suitable for frontend (e.g., list of records)
+        # orient='records' creates a list of dictionaries [{col: value, ...}, ...]
+        averages_json = averages_filled.to_dict(orient='records')
+        logger.info("Successfully converted hourly averages to JSON.") # Log success
+        return averages_json
+    except Exception as e:
+        logger.error(f"Error converting hourly averages to JSON: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error retrieving hourly averages.")
+
+
+@app.get("/data/historical")
+async def get_historical_data(hours: int = 48): # Default to last 48 hours, allow query param
+    """
+    Returns a slice of historical data (time, total load actual) for charting.
+    """
+    logger.info(f"Received request for /data/historical?hours={hours}")
+    if historical_data is None or historical_data.empty:
+        logger.error("Historical data requested but the variable is None or empty.")
+        raise HTTPException(status_code=503, detail="Historical data is unavailable.")
+
+    try:
+        # Ensure hours is positive
+        if hours <= 0:
+            hours = 48 # Default to 48 if invalid value provided
+
+        # Calculate cutoff time (now) and start time
+        now_utc = datetime.now(timezone.utc)
+        start_time = now_utc - timedelta(hours=hours)
+
+        logger.info(f"Fetching historical data from {start_time} to {now_utc}")
+
+        # Select the relevant time slice and columns
+        # Ensure 'time' is timezone-aware (should be from lifespan)
+        if historical_data['time'].dt.tz is None:
+             logger.warning("Historical data time column is not timezone-aware during /data/historical request. Assuming UTC.")
+             historical_data['time'] = historical_data['time'].dt.tz_localize('UTC')
+
+        data_slice = historical_data[
+            (historical_data['time'] >= start_time) & (historical_data['time'] <= now_utc)
+        ][['time', 'total load actual']].copy() # Select only needed columns
+
+        if data_slice.empty:
+             logger.warning(f"No historical data found for the window {start_time} to {now_utc}.")
+             # Return empty list instead of 404, frontend can handle this
+             return []
+
+        # Handle potential NaN values in 'total load actual'
+        data_slice.replace({np.nan: None}, inplace=True)
+
+        # Convert timestamp to ISO format string for JSON compatibility
+        data_slice['time'] = data_slice['time'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Convert to list of dictionaries
+        chart_data = data_slice.to_dict(orient='records')
+        logger.info(f"Successfully prepared {len(chart_data)} records for historical chart.")
+        return chart_data
+
+    except Exception as e:
+        logger.error(f"Error preparing historical data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error retrieving historical data.")
+
+
 @app.post("/powermeter/reading")
 async def receive_power_reading(reading: PowerReading):
     """
@@ -374,18 +551,18 @@ async def receive_power_reading(reading: PowerReading):
 
 # TODO: Add endpoints for fetching historical data slices, viewing state, etc.
 
-# --- Application Startup - COMMENTED OUT OpenADR part ---
-# async def start_ven_client():
-#     """Starts the OpenADR VEN client."""
-#     try:
-#         # Add reports if needed
-#         # ven_client.add_report(...)
-#         logger.info("Starting VEN client run...")
-#         await ven_client.run()
-#     except Exception as e:
-#         logger.error(f"Error during VEN client run: {e}", exc_info=True)
-#     finally:
-#         logger.info("VEN client run finished.")
+# --- Application Startup - OpenADR VEN client ---
+async def start_ven_client():
+    """Starts the OpenADR VEN client."""
+    try:
+        # Add reports if needed
+        # ven_client.add_report(...)
+        logger.info("Starting VEN client run...")
+        await ven_client.run()
+    except Exception as e:
+        logger.error(f"Error during VEN client run: {e}", exc_info=True)
+    finally:
+        logger.info("VEN client run finished.")
 
 
 # --- Main Execution (for running with uvicorn directly) ---

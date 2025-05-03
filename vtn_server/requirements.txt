@@ -1,0 +1,6 @@
+openleadr
+pyOpenSSL==23.2.0
+cryptography>=41.0.0
+signxml>=3.1.0
+requests>=2.28.0
+# Add any other Python dependencies for the VTN server here

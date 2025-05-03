@@ -1,4 +1,0 @@
-streamlit
-requests
-pandas # Likely needed for data manipulation and display
-plotly # For interactive plots
