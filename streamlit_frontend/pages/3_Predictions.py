@@ -74,28 +74,28 @@ with col_hist:
                  try: st.error(f"Backend message: {e.response.json().get('detail', 'No details provided.')}")
                  except Exception: pass
 
-# --- Column 2: Live Prediction (Simulated) ---
+# --- Column 2: Live Prediction from SmartThings ---
 with col_live:
-    st.subheader("Live Prediction (Simulated)")
-    st.markdown("Simulates prediction based on live readings (cycles 1-5).")
+    st.subheader("Live Prediction")
+    st.markdown("Predicts next power reading based on live data from SmartThings.")
 
-    # Initialize session state for cycling number
-    if 'live_prediction_cycle' not in st.session_state:
-        st.session_state.live_prediction_cycle = itertools.cycle([1, 2, 3, 4, 5])
+    # Add a section to display the latest reading
+    latest_reading = fetch_data("readings/latest")
+    if latest_reading:
+        st.info(f"Latest reading: {latest_reading['power_watts']:.2f} W from device {latest_reading['device_id']} at {latest_reading['timestamp']}")
+    else:
+        st.warning("No live readings available yet. Connect your SmartThings device.")
 
-    if st.button("Get Next Live Prediction", disabled=not gemini_configured):
-        # In a real scenario, you'd call fetch_data("predict/live") here
-        # For simulation:
-        simulated_value = next(st.session_state.live_prediction_cycle)
-        st.metric("Simulated Live Prediction", f"{simulated_value:.2f}", help="Cycling 1-5 for demo")
-        # Placeholder for actual API call handling
-        # live_pred_data = fetch_data("predict/live")
-        # if live_pred_data:
-        #     predicted_value = live_pred_data.get('predicted_next_live_reading')
-        #     count = live_pred_data.get('based_on_readings_count', 0)
-        #     st.metric("Predicted Next Reading (W)", f"{predicted_value:.2f}", help=f"Based on {count} readings.")
-        # else:
-        #     st.warning("Could not fetch live prediction from backend.")
+    if st.button("Get Live Prediction", disabled=not gemini_configured):
+        with st.spinner("Requesting live prediction..."):
+            live_pred_data = fetch_data("predict/live")
+            if live_pred_data:
+                predicted_value = live_pred_data.get('predicted_next_live_reading')
+                count = live_pred_data.get('based_on_readings_count', 0)
+                st.success(f"Predicted Next Reading: **{predicted_value:.2f} W**")
+                st.caption(f"Based on {count} readings from SmartThings.")
+            else:
+                st.warning("Could not fetch live prediction from backend.")
 
 
 # --- Column 3: Custom Prediction ---

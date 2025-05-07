@@ -11,7 +11,7 @@ BACKEND_URL = os.getenv("BACKEND_API_URL", "http://127.0.0.1:8000")
 
 # --- Helper Functions ---
 # Using st.cache_data for caching API calls
-@st.cache_data(ttl=60) # Cache data for 60 seconds
+# Remove caching for latest reading to ensure we always get fresh data
 def fetch_data(endpoint):
     """Fetches data from the backend API."""
     url = f"{BACKEND_URL}/{endpoint}"
@@ -43,14 +43,27 @@ def fetch_data(endpoint):
 def display_status_cards():
     """Displays status cards for devices, events, and system status."""
     st.subheader("System Overview")
-    cols = st.columns(1) # Changed to 1 column as we only keep one card
-
+    
+    # Add a refresh button at the top
+    if st.button("🔄 Force Refresh Data"):
+        st.experimental_rerun()
+    
+    # Create a section for SmartThings live readings
+    st.markdown("### SmartThings Live Readings")
+    
+    # Fetch the latest reading
+    latest_reading = fetch_data("readings/latest")
+    
+    # Create two columns for the metrics
+    cols = st.columns(2)
+    
     # Card 1: Latest Power Reading
     with cols[0]:
-        latest_reading = fetch_data("readings/latest")
         if latest_reading and isinstance(latest_reading, dict):
             power = latest_reading.get('power_watts', 'N/A')
             timestamp_str = latest_reading.get('timestamp', 'N/A')
+            device_id = latest_reading.get('device_id', 'Unknown')
+            
             # Attempt to parse and format timestamp
             try:
                 # Assuming timestamp is ISO format UTC (e.g., 2023-10-27T10:30:00Z)
@@ -62,8 +75,28 @@ def display_status_cards():
                  ts_display = timestamp_str # Show raw string if parsing fails
 
             st.metric("Latest Power (W)", f"{power:.2f}" if isinstance(power, (int, float)) else power, delta=None, help=f"Timestamp: {ts_display}")
+            st.caption(f"Device ID: {device_id}")
+            st.caption(f"Last updated: {ts_display}")
         else:
             st.metric("Latest Power (W)", "N/A", help="Could not fetch latest reading.")
+            st.caption("No live readings available yet.")
+    
+    # Card 2: Live Prediction
+    with cols[1]:
+        # Fetch live prediction data
+        live_pred_data = fetch_data("predict/live")
+        if live_pred_data:
+            predicted_value = live_pred_data.get('predicted_next_live_reading')
+            count = live_pred_data.get('based_on_readings_count', 0)
+            st.metric("Predicted Next Reading (W)", f"{predicted_value:.2f}" if isinstance(predicted_value, (int, float)) else predicted_value, delta=None, help=f"Based on {count} readings")
+            st.caption(f"Using {count} historical readings")
+            
+            # Add a button to refresh the prediction
+            if st.button("Refresh Prediction"):
+                st.experimental_rerun()
+        else:
+            st.metric("Predicted Next Reading (W)", "N/A", help="Could not fetch prediction.")
+            st.caption("No prediction available yet.")
 
 # Removed Predicted Next Reading and Gemini Status cards
 
@@ -192,6 +225,24 @@ def display_hourly_averages():
 
 # --- Page Layout ---
 st.set_page_config(page_title="Dashboard - OpenADR Cloud", layout="wide") # Set page config here too
+
+# Add auto-refresh functionality
+auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=True)
+refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 5, 60, 10)
+
+if auto_refresh:
+    st.sidebar.write(f"Page will refresh every {refresh_interval} seconds")
+    # Add a script to refresh the page
+    st.markdown(
+        f"""
+        <script>
+            setTimeout(function() {{
+                window.location.reload();
+            }}, {refresh_interval * 1000});
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
 st.title("📊 Dashboard")
 st.markdown("Overview of the system status and energy data.")

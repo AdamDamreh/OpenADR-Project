@@ -18,7 +18,12 @@ from backend.services.database_service import (
     init_db,
     save_power_reading,
     get_all_live_power_readings, # Import the function to get all live readings
-    get_latest_live_power_reading # Import function to get the latest reading
+    get_latest_live_power_reading, # Import function to get the latest reading
+    get_active_openadr_events,
+    get_all_openadr_events,
+    update_openadr_event_status,
+    save_openadr_event,
+    OpenADREventDB
 )
 # Import specific functions needed, add new ones later
 from backend.services.prediction_service import (
@@ -549,7 +554,78 @@ async def receive_power_reading(reading: PowerReading):
         raise HTTPException(status_code=500, detail="Failed to save power reading to the database.")
 
 
-# TODO: Add endpoints for fetching historical data slices, viewing state, etc.
+# --- OpenADR Event Endpoints ---
+@app.get("/openadr/events/active")
+async def get_active_events():
+    """
+    Fetches all active OpenADR events (current and future).
+    """
+    try:
+        events = await get_active_openadr_events()
+        return events
+    except Exception as e:
+        logger.error(f"Error fetching active OpenADR events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error fetching active events: {e}")
+
+@app.get("/openadr/events")
+async def get_events(limit: int = 50):
+    """
+    Fetches all OpenADR events with an optional limit.
+    """
+    try:
+        events = await get_all_openadr_events(limit=limit)
+        return events
+    except Exception as e:
+        logger.error(f"Error fetching OpenADR events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error fetching events: {e}")
+
+@app.post("/openadr/events")
+async def create_event(event_data: dict):
+    """
+    Creates a new OpenADR event.
+    """
+    try:
+        # Validate required fields
+        required_fields = ['event_id', 'signal_type', 'signal_level', 'start_time', 'duration_minutes']
+        for field in required_fields:
+            if field not in event_data:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+        
+        # Save the event to the database
+        db_event = await save_openadr_event(event_data)
+        if db_event:
+            logger.info(f"Successfully created OpenADR event with ID: {db_event.id}, event_id: {db_event.event_id}")
+            return db_event
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create OpenADR event")
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Error creating OpenADR event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error creating event: {e}")
+
+@app.put("/openadr/events/{event_id}/status")
+async def update_event_status(event_id: str, status: str):
+    """
+    Updates the status of an OpenADR event.
+    """
+    try:
+        # Validate status
+        valid_statuses = ['active', 'completed', 'cancelled']
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+        
+        # Update the event status
+        success = await update_openadr_event_status(event_id, status)
+        if success:
+            return {"message": f"Successfully updated event {event_id} status to {status}"}
+        else:
+            raise HTTPException(status_code=404, detail=f"Event with ID {event_id} not found")
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Error updating OpenADR event status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error updating event status: {e}")
 
 # --- Application Startup - OpenADR VEN client ---
 async def start_ven_client():

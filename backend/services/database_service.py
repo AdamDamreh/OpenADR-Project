@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String, Float, DateTime, MetaData
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime, timezone # Ensure timezone is imported
+from datetime import datetime, timezone, timedelta # Ensure timezone and timedelta are imported
 from contextlib import asynccontextmanager
 
 # Import the Pydantic model to use its structure
@@ -74,6 +74,23 @@ class LivePowerReadingDB(Base):
     timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
     power_watts = Column(Float, nullable=False)
     device_id = Column(String, nullable=True, index=True)
+
+# Model for OpenADR events
+class OpenADREventDB(Base):
+    __tablename__ = "openadr_events"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String, nullable=False, index=True, unique=True)
+    signal_type = Column(String, nullable=False)
+    signal_level = Column(Float, nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    target_ven_id = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active, completed, cancelled
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), 
+                        onupdate=lambda: datetime.now(timezone.utc))
 
 
 # --- Database Initialization ---
@@ -173,6 +190,102 @@ async def get_all_live_power_readings() -> list[LivePowerReadingDB]:
             logger.error(f"Failed to fetch all live readings: {e}", exc_info=True)
             # Return empty list on failure
     return readings
+
+# --- OpenADR Event Functions ---
+async def save_openadr_event(event_data):
+    """Saves an OpenADR event to the database."""
+    logger.debug(f"Attempting to save OpenADR event: {event_data}")
+    async with get_db_session() as session:
+        try:
+            # Calculate end time based on start time and duration
+            start_time = event_data["start_time"]
+            if isinstance(start_time, str):
+                start_time = datetime.fromisoformat(start_time)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+            
+            duration_minutes = event_data["duration_minutes"]
+            end_time = start_time + timedelta(minutes=duration_minutes)
+            
+            # Create the database model instance
+            db_event = OpenADREventDB(
+                event_id=event_data["event_id"],
+                signal_type=event_data["signal_type"],
+                signal_level=event_data["signal_level"],
+                start_time=start_time,
+                end_time=end_time,
+                duration_minutes=duration_minutes,
+                target_ven_id=event_data.get("target_ven_id"),
+                status=event_data.get("status", "active")
+            )
+            
+            session.add(db_event)
+            await session.flush()
+            await session.refresh(db_event)
+            logger.info(f"Successfully saved OpenADR event with ID: {db_event.id}, event_id: {db_event.event_id}")
+            return db_event
+        except Exception as e:
+            logger.error(f"Error saving OpenADR event: {e}", exc_info=True)
+            return None
+
+async def get_active_openadr_events():
+    """Fetches all active OpenADR events (current and future)."""
+    logger.debug("Attempting to fetch active OpenADR events...")
+    events = []
+    async with get_db_session() as session:
+        try:
+            from sqlalchemy.future import select
+            now = datetime.now(timezone.utc)
+            # Get events that are active (end time is in the future)
+            stmt = select(OpenADREventDB).where(
+                OpenADREventDB.end_time >= now,
+                OpenADREventDB.status == "active"
+            ).order_by(OpenADREventDB.start_time.asc())
+            
+            result = await session.execute(stmt)
+            events = result.scalars().all()
+            logger.info(f"Successfully fetched {len(events)} active OpenADR events.")
+        except Exception as e:
+            logger.error(f"Failed to fetch active OpenADR events: {e}", exc_info=True)
+    return events
+
+async def get_all_openadr_events(limit=50):
+    """Fetches all OpenADR events, with optional limit."""
+    logger.debug(f"Attempting to fetch all OpenADR events (limit={limit})...")
+    events = []
+    async with get_db_session() as session:
+        try:
+            from sqlalchemy.future import select
+            stmt = select(OpenADREventDB).order_by(OpenADREventDB.start_time.desc()).limit(limit)
+            result = await session.execute(stmt)
+            events = result.scalars().all()
+            logger.info(f"Successfully fetched {len(events)} OpenADR events.")
+        except Exception as e:
+            logger.error(f"Failed to fetch OpenADR events: {e}", exc_info=True)
+    return events
+
+async def update_openadr_event_status(event_id, new_status):
+    """Updates the status of an OpenADR event."""
+    logger.debug(f"Attempting to update OpenADR event {event_id} status to {new_status}...")
+    async with get_db_session() as session:
+        try:
+            from sqlalchemy.future import select
+            stmt = select(OpenADREventDB).where(OpenADREventDB.event_id == event_id)
+            result = await session.execute(stmt)
+            event = result.scalar_one_or_none()
+            
+            if event:
+                event.status = new_status
+                event.updated_at = datetime.now(timezone.utc)
+                await session.flush()
+                logger.info(f"Successfully updated OpenADR event {event_id} status to {new_status}")
+                return True
+            else:
+                logger.warning(f"OpenADR event {event_id} not found for status update")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to update OpenADR event status: {e}", exc_info=True)
+            return False
 
 
 if __name__ == '__main__':

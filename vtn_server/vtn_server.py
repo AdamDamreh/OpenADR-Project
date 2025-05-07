@@ -3,15 +3,35 @@ import asyncio
 import logging
 import requests # Added for HTTP requests
 import json # Added for JSON handling
+import sys
+import os
 from datetime import datetime, timedelta, timezone
 from openleadr.utils import generate_id # Removed create_message import
 # Removed enums import entirely as it causes issues with older openleadr versions
 
+# Configure logging first
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger('openleadr')
 
+# Add the project root to the Python path to import backend modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import database functions
+DATABASE_AVAILABLE = False
+try:
+    # Check if SQLAlchemy is installed
+    import sqlalchemy
+    try:
+        from backend.services.database_service import save_openadr_event, update_openadr_event_status
+        DATABASE_AVAILABLE = True
+        logger.info("Successfully imported database service. Events will be saved to database.")
+    except ImportError:
+        logger.warning("Could not import database service. Events will not be saved to database.")
+except ImportError:
+    logger.warning("SQLAlchemy is not installed. Events will not be saved to database.")
+
 # Define the SmartApp endpoint URL
-SMARTAPP_ENDPOINT = "https://a263-152-15-112-171.ngrok-free.app/openadr-event"
+SMARTAPP_ENDPOINT = "https://d6b5-152-15-112-78.ngrok-free.app/openadr-event"
 
 # Function to send event data to the SmartApp
 def send_event_to_smartapp(event_data):
@@ -42,16 +62,29 @@ async def on_create_party_registration(payload):
         logger.warning("Registration denied: No VEN ID provided.")
         return False # Indicate rejection
 
-# Placeholder handler for event opt-in/out responses from the VEN
-# Signature updated based on library requirements indicated by ValueError
+# Handler for event opt-in/out responses from the VEN
 async def handle_event(ven_id, event_id, opt_type):
     """
-    Placeholder for handling VEN opt responses to events.
+    Handle VEN opt responses to events and update the database.
     """
     logger.info(f"Received event response from VEN {ven_id} for event {event_id}: {opt_type}")
-    # In a real application, you might record the VEN's response (optIn/optOut)
-    # For now, just acknowledge receipt.
-    return 'optIn' # or 'optOut' based on capability/preference
+    
+    # Update the event status in the database if available
+    if DATABASE_AVAILABLE:
+        try:
+            # If the VEN opts out, mark the event as cancelled
+            if opt_type == 'optOut':
+                logger.info(f"VEN {ven_id} opted out of event {event_id}, updating status to cancelled")
+                success = await update_openadr_event_status(event_id, 'cancelled')
+                if success:
+                    logger.info(f"Successfully updated event {event_id} status to cancelled")
+                else:
+                    logger.warning(f"Failed to update event {event_id} status")
+        except Exception as e:
+            logger.error(f"Error updating event status in database: {e}", exc_info=True)
+    
+    # Return the opt type to acknowledge receipt
+    return opt_type
 
 async def main():
     # Create the OpenADR VTN Server
@@ -113,17 +146,41 @@ async def main():
                      )
     logger.info(f"Added sample event {event_id} targeting VEN_123")
 
-    # --- Send the event data to the SmartApp ---
+    # --- Send the event data to the SmartApp and save to database ---
     # In a real scenario, you might send this when the event becomes active,
     # or based on some other trigger. Here, we send it shortly after adding.
     # We need to format the data similarly to how the SmartApp expects it.
-    smartapp_event_data = {
-        'openadr_event_id': event_id,
+    event_data = {
+        'event_id': event_id,
         'signal_type': "level", # Send lowercase string value directly
         'start_time': (now + timedelta(minutes=1)).isoformat(),
         'duration_minutes': 5,
         'signal_level': 1.0,
-        'target_ven_id': 'VEN_123' # Include target info
+        'target_ven_id': 'VEN_123', # Include target info
+        'status': 'active'
+    }
+    
+    # Save to database if available
+    if DATABASE_AVAILABLE:
+        try:
+            logger.info(f"Saving event {event_id} to database...")
+            db_event = await save_openadr_event(event_data)
+            if db_event:
+                logger.info(f"Successfully saved event {event_id} to database with ID {db_event.id}")
+            else:
+                logger.warning(f"Failed to save event {event_id} to database")
+        except Exception as e:
+            logger.error(f"Error saving event to database: {e}", exc_info=True)
+    
+    # Send to SmartApp
+    smartapp_event_data = {
+        'openadr_event_id': event_id,
+        'signal_type': event_data['signal_type'],
+        'start_time': event_data['start_time'],
+        'duration_minutes': event_data['duration_minutes'],
+        'signal_level': event_data['signal_level'],
+        'target_ven_id': event_data['target_ven_id'],
+        'action': 'SHED'  # Add an action for the SmartApp to interpret
     }
     send_event_to_smartapp(smartapp_event_data)
     # --- End send event ---
