@@ -18,7 +18,7 @@ This project simulates an OpenADR (Open Automated Demand Response) cloud system 
 This simulation demonstrates a complete OpenADR ecosystem where:
 
 - A Virtual Top Node (VTN) server creates and sends demand response events
-- A Virtual End Node (VEN) client receives and responds to these events
+- A Virtual End Node (VEN) client (ESP32) receives and responds to these events
 - A SmartApp acts as a bridge between the VTN and smart devices
 - A backend API handles data processing, storage, and prediction
 - A frontend visualizes energy data, predictions, and OpenADR events
@@ -50,8 +50,8 @@ The system follows a distributed architecture with the following components:
          ▼
 ┌─────────────────┐
 │                 │
-│  Smart Devices  │
-│  (Simulated)    │
+│      ESP32      │
+│  (SmartThings)  │
 │                 │
 └─────────────────┘
 ```
@@ -72,6 +72,11 @@ The VTN server is built with OpenLEADR and is responsible for:
 - Creating and sending OpenADR events
 - Handling VEN registrations
 - Processing event responses (opt-in/opt-out)
+
+### VEN Client (ESP32)
+
+The VEN client is an ESP32 board connected to SmartThings Via Direct SDK. This Github is used for set up, following the switch example. Additional code was written to add the power meter capability: 
+- https://github.com/SmartThingsCommunity/st-device-sdk-c
 
 ### SmartApp (Node.js)
 
@@ -266,6 +271,5 @@ In a real-world scenario, events would be created based on grid conditions, weat
 
 Each component writes logs to the console. Check these logs for error messages and debugging information.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+## Acknowledgement
+I would like to thank Dr. Chenglong Fu at the University of North Carolina at Charlotte for his guidance and assistance with this project.
